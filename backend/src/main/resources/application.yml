@@ -3,7 +3,7 @@ server:
 
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/whistleblower
+    url: jdbc:postgresql://postgres:5432/whistleblower
     username: postgres
     password: postgres
 
@@ -14,7 +14,7 @@ spring:
 
   data:
     redis:
-      host: localhost
+      host: redis
       port: 6379
 
   jpa:

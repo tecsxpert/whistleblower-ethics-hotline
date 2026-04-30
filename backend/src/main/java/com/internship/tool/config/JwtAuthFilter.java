@@ -50,6 +50,8 @@ protected void doFilterInternal(HttpServletRequest request,
                 new SimpleGrantedAuthority("ROLE_USER")
             );
 
+
+
             UsernamePasswordAuthenticationToken auth =
                 new UsernamePasswordAuthenticationToken(
                     username,
