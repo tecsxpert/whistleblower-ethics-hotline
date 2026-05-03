@@ -1,0 +1,124 @@
+<!doctype html>
+<html xmlns:th="http://www.thymeleaf.org">
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        background-color: #f5f5f5;
+      }
+      .container {
+        max-width: 600px;
+        margin: 0 auto;
+        background-color: white;
+        padding: 20px;
+        border-radius: 8px;
+      }
+      .header {
+        background-color: #dc3545;
+        color: white;
+        padding: 20px;
+        border-radius: 4px;
+        margin-bottom: 20px;
+      }
+      .footer {
+        background-color: #f9f9f9;
+        padding: 15px;
+        text-align: center;
+        border-top: 1px solid #ddd;
+        margin-top: 20px;
+      }
+      .alert {
+        background-color: #f8d7da;
+        border: 1px solid #f5c6cb;
+        padding: 15px;
+        border-radius: 4px;
+        margin: 20px 0;
+      }
+      .btn {
+        background-color: #dc3545;
+        color: white;
+        padding: 10px 20px;
+        text-decoration: none;
+        border-radius: 4px;
+        display: inline-block;
+      }
+      .urgent {
+        color: #721c24;
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h2>⏰ Deadline Alert</h2>
+      </div>
+
+      <p>Hello,</p>
+
+      <p>This is an urgent notification about an upcoming deadline.</p>
+
+      <div class="alert">
+        <h3 style="margin-top: 0; color: #721c24">⚠️ Action Required</h3>
+        <p><strong>Complaint:</strong> <span th:text="${title}">Title</span></p>
+        <p class="urgent">
+          Time Remaining: <span th:text="${daysRemaining}">0</span> days
+        </p>
+      </div>
+
+      <table style="width: 100%; border-collapse: collapse; margin: 20px 0">
+        <tr style="background-color: #f9f9f9">
+          <td style="padding: 10px; border: 1px solid #ddd">
+            <strong>Complaint:</strong>
+          </td>
+          <td style="padding: 10px; border: 1px solid #ddd" th:text="${title}">
+            Title
+          </td>
+        </tr>
+        <tr>
+          <td style="padding: 10px; border: 1px solid #ddd">
+            <strong>Days Remaining:</strong>
+          </td>
+          <td
+            style="
+              padding: 10px;
+              border: 1px solid #ddd;
+              color: #dc3545;
+              font-weight: bold;
+            "
+            th:text="${daysRemaining}"
+          >
+            0
+          </td>
+        </tr>
+        <tr style="background-color: #f9f9f9">
+          <td style="padding: 10px; border: 1px solid #ddd">
+            <strong>Alert Date:</strong>
+          </td>
+          <td
+            style="padding: 10px; border: 1px solid #ddd"
+            th:text="${#dates.format(date, 'dd MMM yyyy HH:mm')}"
+          >
+            Date
+          </td>
+        </tr>
+      </table>
+
+      <p><strong>Please take immediate action to meet the deadline.</strong></p>
+
+      <p style="text-align: center">
+        <a href="http://localhost:3000/complaints" class="btn"
+          >Review Complaint</a
+        >
+      </p>
+
+      <p>Thank you,<br />Whistleblower Ethics Hotline Team</p>
+
+      <div class="footer">
+        <p>© 2026 Whistleblower Ethics Hotline. All rights reserved.</p>
+        <p>This is an automated email. Please do not reply to this message.</p>
+      </div>
+    </div>
+  </body>
+</html>

@@ -1,89 +1,129 @@
-import os
-import json
-import time
+"""
+Groq LLM client with retry logic, back-off, and PII-safe logging.
+"""
+
 import logging
-from groq import Groq
-from datetime import datetime, timezone
+import os
+import time
+
+import requests
 
 logger = logging.getLogger(__name__)
 
-# Initialize Groq client once at module load
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = "llama-3.3-70b-versatile"
+MAX_RETRIES = 3
+RETRY_BACKOFF = [1, 2, 4]
+GROQ_TIMEOUT = int(os.getenv("GROQ_TIMEOUT_SECONDS", "25"))
 
 
-def load_prompt(filename: str) -> str:
-    """Load a prompt template from the prompts/ folder."""
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    path = os.path.join(base, "prompts", filename)
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read()
+def call_groq(
+    prompt: str,
+    temperature: float = 0.3,
+    max_tokens: int = 1024,
+    system_message: str | None = None,
+) -> str:
+    """Call the Groq chat-completions API with automatic retries.
 
-
-def describe_complaint(complaint: str) -> dict:
+    Returns the assistant's response text.
+    Raises ``RuntimeError`` on permanent failures.
     """
-    Send complaint to Groq and return structured JSON description.
-    Retries up to 3 times with exponential backoff on failure.
-    Returns fallback dict if all attempts fail.
-    """
-    template = load_prompt("describe_prompt.txt")
-    generated_at = datetime.now(timezone.utc).isoformat()
 
-    # Fill in placeholders
-    prompt = template.replace("{complaint}", complaint).replace("{generated_at}", generated_at)
+    api_key = os.getenv("GROQ_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY is not set or is empty.")
 
-    for attempt in range(3):
+    messages: list[dict] = []
+    if system_message:
+        messages.append({"role": "system", "content": system_message})
+    messages.append({"role": "user", "content": prompt})
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+
+    last_exception: Exception | None = None
+
+    for attempt in range(MAX_RETRIES):
+        logger.info(
+            "Groq API call attempt %d/%d (model=%s, temp=%s)",
+            attempt + 1,
+            MAX_RETRIES,
+            GROQ_MODEL,
+            temperature,
+        )
         try:
-            logger.info(f"Calling Groq API — attempt {attempt + 1}")
-
-            response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.3,
-                max_tokens=600
+            resp = requests.post(
+                GROQ_API_URL,
+                headers=headers,
+                json=payload,
+                timeout=GROQ_TIMEOUT,
             )
 
-            raw = response.choices[0].message.content.strip()
+            # Immediate failures — no retry
+            if resp.status_code in (401, 403):
+                raise RuntimeError(
+                    f"Groq API authentication error (HTTP {resp.status_code}). "
+                    "Check your GROQ_API_KEY."
+                )
 
-            # Strip markdown code fences if model adds them
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-                raw = raw.strip()
+            # Rate-limited — honour Retry-After
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", RETRY_BACKOFF[attempt]))
+                logger.warning(
+                    "Groq API rate-limited (429). Retrying after %ds …", retry_after
+                )
+                time.sleep(retry_after)
+                continue
 
-            result = json.loads(raw)
-            logger.info("Groq response parsed successfully")
-            return result
+            resp.raise_for_status()
 
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parse error on attempt {attempt + 1}: {e}")
-            logger.error(f"Raw response was: {raw!r}")
-            if attempt == 2:
-                return _fallback(generated_at)
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            logger.info("Groq API responded (length=%d)", len(content))
+            return content
 
-        except Exception as e:
-            logger.error(f"Groq API error on attempt {attempt + 1}: {e}")
-            if attempt == 2:
-                return _fallback(generated_at)
-            wait = 2 ** attempt  # 1s, 2s
-            logger.info(f"Retrying in {wait}s...")
-            time.sleep(wait)
+        except requests.exceptions.Timeout as exc:
+            logger.warning(
+                "Groq API timeout on attempt %d/%d: %s",
+                attempt + 1,
+                MAX_RETRIES,
+                exc,
+            )
+            last_exception = exc
 
-    return _fallback(generated_at)
+        except requests.exceptions.HTTPError as exc:
+            logger.warning(
+                "Groq API HTTP error on attempt %d/%d: %s",
+                attempt + 1,
+                MAX_RETRIES,
+                exc,
+            )
+            last_exception = exc
 
+        except requests.exceptions.RequestException as exc:
+            logger.warning(
+                "Groq API request error on attempt %d/%d: %s",
+                attempt + 1,
+                MAX_RETRIES,
+                exc,
+            )
+            last_exception = exc
 
-def _fallback(generated_at: str) -> dict:
-    """Return a safe fallback response when Groq is unavailable."""
-    return {
-        "title": "Unable to process complaint",
-        "description": "The AI service is temporarily unavailable. Your complaint has been received. Please try again shortly.",
-        "category": "Other",
-        "severity": "Medium",
-        "severity_reason": "Severity could not be determined — AI service unavailable.",
-        "suggested_department": "Compliance",
-        "is_anonymous_safe": True,
-        "generated_at": generated_at,
-        "is_fallback": True
-    }
+        # Back-off before next attempt
+        if attempt < MAX_RETRIES - 1:
+            time.sleep(RETRY_BACKOFF[attempt])
+
+    raise RuntimeError(
+        f"Groq API failed after {MAX_RETRIES} attempts. Last error: {last_exception}"
+    )
