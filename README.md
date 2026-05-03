@@ -1,6 +1,39 @@
+OverView:
 This project is a backend system designed to securely manage and track complaints. It is built using Spring Boot, PostgreSQL, and Docker, with support for authentication, validation, and testing. The system provides REST APIs for complaint management and demonstrates real-world backend development practices.
 
-Tech Stack
+Overview
+
+This project is a backend system designed to manage and track complaints securely. It provides REST APIs for complaint management with authentication, validation, and database integration. The system is containerized using Docker and supports scalable backend development practices.
+
+Architecture:
+
+The system follows a layered architecture:
+
+Client (Postman / Frontend)
+        |
+        v
+Controller Layer (REST APIs)
+        |
+        v
+Service Layer (Business Logic)
+        |
+        v
+Repository Layer (JPA)
+        |
+        v
+PostgreSQL Database
+
+Prerequisites:
+
+Before running the project, ensure the following are installed:
+
+Java 17
+Maven
+Docker
+Docker Compose
+Git
+
+Tech Stack:
 
 Backend: Spring Boot (Java 17)
 Database: PostgreSQL
@@ -9,7 +42,8 @@ Containerization: Docker and Docker Compose
 Build Tool: Maven
 Testing: Spring Boot Test, MockMvc
 
-Features
+Features:
+
 User authentication using JWT
 Create complaint
 View complaints with pagination
@@ -19,7 +53,8 @@ Input validation
 Global exception handling
 Dockerized application setup
 Basic unit and controller testing
-Project Structure
+
+Project Structure:
 
 src/
 controller/
@@ -92,7 +127,7 @@ Authentication:
 
 POST /auth/login
 
-Complaints
+Complaints:
 
 POST /api/complaints/create
 GET /api/complaints
@@ -100,12 +135,21 @@ GET /api/complaints/{id}
 PUT /api/complaints/{id}
 DELETE /api/complaints/{id}
 
-Running the Application
+Running the Application:
 
-Build and run using Docker:
-
+Build and run using Docker
 docker-compose up --build
-
 Stop the application:
-
 docker-compose down -v
+
+Running Tests:
+
+mvn test
+
+Status:
+
+Backend fully implemented
+APIs tested and working
+Docker setup functional
+Database integrated
+Ready for demonstration
