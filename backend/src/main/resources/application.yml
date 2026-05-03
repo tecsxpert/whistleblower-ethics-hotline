@@ -1,0 +1,56 @@
+server:
+  port: 8080
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/whistleblower
+    username: postgres
+    password: postgres
+
+  cache:
+    type: redis
+    redis:
+      time-to-live: 600000
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+
+  mail:
+    host: smtp.gmail.com
+    port: 587
+    username: ${MAIL_USERNAME}
+    password: ${MAIL_PASSWORD}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+            required: true
+          connectiontimeout: 5000
+          timeout: 5000
+          writetimeout: 5000
+
+  thymeleaf:
+    prefix: classpath:/templates/
+    suffix: .html
+    mode: HTML
+    encoding: UTF-8
+
+# Scheduled tasks configuration
+scheduler:
+  reminder:
+    enabled: true
+    # Run daily at 9:00 AM
+    cron: "0 0 9 * * *"
+  deadline-alert:
+    enabled: true
+    # Run every 6 hours
+    cron: "0 0 */6 * * *"
