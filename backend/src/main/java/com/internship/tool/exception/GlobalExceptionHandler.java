@@ -18,8 +18,11 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiError> handleAll(Exception ex) {
+
+        ex.printStackTrace(); // 🔥 IMPORTANT (for debugging)
+
         return new ResponseEntity<>(
-                new ApiError(500, ex.getMessage()),
+                new ApiError(500, ex.getClass().getName() + ": " + ex.getMessage()),
                 HttpStatus.INTERNAL_SERVER_ERROR
         );
     }

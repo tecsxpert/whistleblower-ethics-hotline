@@ -33,31 +33,26 @@ public class ComplaintController {
     // ✅ GET /all (pagination) - Any authenticated user can read
     @GetMapping("/all")
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Page<Complaint>> getAll(
+    public ResponseEntity<?> getAll(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "5") int size) {
 
-        System.out.println("📖 Fetching complaints page: " + page);
-        return ResponseEntity.ok(service.getAllPaginated(PageRequest.of(page, size)));
-    }
+    Page<Complaint> complaintPage = service.getAllPaginated(PageRequest.of(page, size));
+
+    return ResponseEntity.ok(complaintPage.getContent());
+}
 
     // ✅ GET / (default - paginated) - Any authenticated user can read
     @GetMapping
     @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Page<Complaint>> getAllDefault(
+    public ResponseEntity<?> getAllDefault(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "5") int size) {
 
-        return ResponseEntity.ok(service.getAllPaginated(PageRequest.of(page, size)));
-    }
+    Page<Complaint> complaintPage = service.getAllPaginated(PageRequest.of(page, size));
 
-    // ✅ GET /{id} with 404 - Any authenticated user can read
-    @GetMapping("/{id}")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Complaint> getById(@PathVariable Long id) {
-        System.out.println("🔍 Fetching complaint: " + id);
-        return ResponseEntity.ok(service.getById(id));
-    }
+    return ResponseEntity.ok(complaintPage.getContent());
+}
 
     // ✅ PUT /{id} - Any authenticated user can update
     @PutMapping("/{id}")

@@ -3,19 +3,17 @@ server:
 
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/whistleblower
+    url: jdbc:postgresql://postgres:5432/whistleblower
     username: postgres
     password: postgres
 
-  cache:
-    type: redis
-    redis:
-      time-to-live: 600000
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
 
-  data:
-    redis:
-      host: localhost
-      port: 6379
+  cache:
+    type: none
+    
 
   jpa:
     hibernate:
