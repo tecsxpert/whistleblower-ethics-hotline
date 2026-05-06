@@ -1,7 +1,8 @@
-Flask==3.0.3
-groq==0.9.0
-flask-limiter==3.7.0
-redis==5.0.7
+flask==3.0.3
+flask-limiter==3.8.0
+gunicorn==22.0.0
 python-dotenv==1.0.1
+redis==5.0.8
+chromadb==0.5.5
+sentence-transformers==3.0.1
 requests==2.32.3
-pytest==8.2.2
