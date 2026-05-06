@@ -1,95 +1,85 @@
 """
-Redis caching layer with resilient connection management.
-Silently degrades to no-op when Redis is unavailable.
+Redis caching layer — SHA-256 keyed, fail-silent on connection errors.
 """
 
-import hashlib
+import os
 import json
+import hashlib
 import logging
-import time
+from typing import Optional
+
+import redis
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Module-level state
-# ---------------------------------------------------------------------------
-_redis_client = None
-_redis_warned = False
-_next_retry_time: float = 0.0
+# ── Configuration ────────────────────────────────────────────────────
+REDIS_URL: str = os.getenv("REDIS_URL", "redis://redis:6379")
+DEFAULT_TTL: int = 900  # 15 minutes
+
+# ── Singleton client with lazy initialisation ────────────────────────
+_redis_client: Optional[redis.Redis] = None
+_CONNECT_TIMEOUT: int = 30  # seconds
 
 
-def _get_redis():
-    """Return a live Redis client or ``None`` if unavailable."""
-    global _redis_client, _redis_warned, _next_retry_time
-    import os
-
+def _get_redis() -> Optional[redis.Redis]:
+    """Return the Redis client, creating it lazily.  Never raises."""
+    global _redis_client
     if _redis_client is not None:
         return _redis_client
-
-    if time.time() < _next_retry_time:
-        return None
-
-    redis_url = os.getenv("REDIS_URL", "")
-    if not redis_url:
-        if not _redis_warned:
-            logger.warning("REDIS_URL not set — caching disabled.")
-            _redis_warned = True
-        return None
-
     try:
-        import redis
-
-        client = redis.from_url(redis_url, socket_connect_timeout=2)
-        client.ping()
-        _redis_client = client
-        logger.info("Redis connected: %s", redis_url)
-        return _redis_client
+        _redis_client = redis.Redis.from_url(
+            REDIS_URL,
+            decode_responses=True,
+            socket_connect_timeout=_CONNECT_TIMEOUT,
+            socket_timeout=5,
+        )
+        _redis_client.ping()
+        logger.info("Redis connected at %s", REDIS_URL)
     except Exception as exc:
-        _next_retry_time = time.time() + 30
-        if not _redis_warned:
-            logger.warning("Redis unavailable (retry in 30 s): %s", exc)
-            _redis_warned = True
-        return None
+        logger.warning("Redis unavailable — caching disabled: %s", exc)
+        _redis_client = None
+    return _redis_client
 
 
 def make_cache_key(endpoint: str, text: str) -> str:
-    """SHA-256 hex digest of ``endpoint:text`` — always 64 characters."""
-    return hashlib.sha256(f"{endpoint}:{text}".encode()).hexdigest()
+    """SHA-256 hex digest of ``endpoint:text``."""
+    raw = f"{endpoint}:{text}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def cache_get(key: str) -> dict | None:
-    """Retrieve a cached value. Returns ``None`` on miss or error."""
-    global _redis_client, _redis_warned
-
-    r = _get_redis()
-    if r is None:
-        return None
-
+def cache_get(key: str) -> Optional[dict]:
+    """Retrieve cached value.  Returns ``None`` on miss or error."""
     try:
-        raw = r.get(key)
-        if raw is None:
-            logger.debug("Cache MISS: %s", key[:16])
+        client = _get_redis()
+        if client is None:
             return None
-        logger.debug("Cache HIT: %s", key[:16])
-        return json.loads(raw)
+        data = client.get(key)
+        if data is None:
+            return None
+        return json.loads(data)
     except Exception as exc:
-        logger.warning("Redis GET error (resetting client): %s", exc)
-        _redis_client = None
-        _redis_warned = False
+        logger.warning("cache_get failed (key=%s): %s", key[:16], exc)
         return None
 
 
-def cache_set(key: str, value: dict, ttl_seconds: int = 900) -> None:
-    """Store a value in cache with TTL. No-op on error."""
-    global _redis_client, _redis_warned
-
-    r = _get_redis()
-    if r is None:
-        return
-
+def cache_set(key: str, value: dict, ttl: int = DEFAULT_TTL) -> None:
+    """Store a value in the cache.  Fails silently."""
     try:
-        r.setex(key, ttl_seconds, json.dumps(value))
+        client = _get_redis()
+        if client is None:
+            return
+        client.setex(key, ttl, json.dumps(value))
     except Exception as exc:
-        logger.warning("Redis SETEX error (resetting client): %s", exc)
-        _redis_client = None
-        _redis_warned = False
+        logger.warning("cache_set failed (key=%s): %s", key[:16], exc)
+
+
+def is_redis_connected() -> bool:
+    """Return ``True`` if Redis is reachable right now."""
+    try:
+        client = _get_redis()
+        if client is None:
+            return False
+        client.ping()
+        return True
+    except Exception:
+        return False

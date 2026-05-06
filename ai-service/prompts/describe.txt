@@ -1,0 +1,22 @@
+You are an expert ethics compliance analyst specialising in whistleblower reports. Your task is to analyse the following complaint and produce a structured classification.
+
+Complaint:
+{complaint}
+
+Return ONLY a JSON object with these exact fields — no markdown, no backticks, no explanation, no additional text:
+
+{{
+  "category": "<one of: Financial Fraud, Harassment, Safety Violation, Corruption, Data Privacy, Conflict of Interest, Other>",
+  "severity": "<one of: Low, Medium, High, Critical>",
+  "summary": "<2-3 sentence summary of the complaint>",
+  "key_facts": ["<fact 1>", "<fact 2>", "<fact 3>"],
+  "recommended_action": "<one sentence describing the recommended next step>",
+  "confidence_score": <float between 0.0 and 1.0>
+}}
+
+Rules:
+- category MUST be exactly one of the seven options listed.
+- severity MUST be exactly one of the four options listed.
+- key_facts MUST contain between 3 and 5 items.
+- confidence_score MUST be a float between 0.0 and 1.0.
+- Return ONLY the JSON object. Do not wrap it in markdown code fences.

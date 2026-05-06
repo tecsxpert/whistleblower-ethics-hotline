@@ -1,216 +1,109 @@
-# Whistleblower & Ethics Hotline — AI Microservice
+# Tool-70 — Whistleblower & Ethics Hotline AI Microservice
 
-A production-ready Flask AI microservice that powers the Whistleblower & Ethics Hotline tool with AI-driven report classification, compliance recommendations, formal report generation, and RAG-based knowledge queries.
+> **AI Developer 1** — Capstone Project  
+> Flask 3.x · Groq Llama-3.3-70b · Redis · ChromaDB · Docker
 
-The service integrates with Groq's LLaMA-3.3-70b model for natural language processing, ChromaDB for semantic search over a compliance knowledge base, and Redis for response caching.
+---
+
+## Overview
+
+This microservice powers the AI features of the Whistleblower & Ethics Hotline platform. It analyses whistleblower complaints, classifies them by category and severity, generates actionable investigation recommendations, and produces formal compliance reports — all powered by the Groq Llama-3.3-70b-versatile large language model.
 
 ## Architecture
 
 ```
-┌─────────────┐     ┌──────────────────┐     ┌────────────────────┐
-│  React UI   │────▶│  Spring Boot     │────▶│  Flask AI Service  │
-│  (Frontend) │     │  (Port 8080)     │     │  (Port 5000)       │
-└─────────────┘     └──────────────────┘     └────────┬───────────┘
-                                                      │
-                                         ┌────────────┼────────────┐
-                                         ▼            ▼            ▼
-                                   ┌──────────┐ ┌──────────┐ ┌─────────┐
-                                   │ Groq API │ │ ChromaDB │ │  Redis  │
-                                   │ (LLM)   │ │ (Vectors)│ │ (Cache) │
-                                   └──────────┘ └──────────┘ └─────────┘
+┌──────────────┐    ┌───────────────┐    ┌────────────┐
+│  Flask App   │───▶│  Groq API     │    │  Redis     │
+│  (port 5000) │    │  (LLM)        │    │  (cache)   │
+│              │───▶│               │    │            │
+│  Blueprints: │    └───────────────┘    └────────────┘
+│  /describe   │                              ▲
+│  /recommend  │──────────────────────────────┘
+│  /report     │
+│  /health     │───▶┌───────────────┐
+└──────────────┘    │  ChromaDB     │
+                    │  (vector RAG) │
+                    └───────────────┘
 ```
 
-## Prerequisites
+## API Endpoints
 
-| Tool       | Version  | Purpose                  |
-|------------|----------|--------------------------|
-| Python     | 3.11+    | Runtime                  |
-| pip        | 23+      | Package manager          |
-| Docker     | 24+      | Containerisation         |
-| Redis      | 7+       | Caching (optional)       |
-| Groq API   | —        | LLM inference            |
+| Method | Endpoint           | Description                          |
+|--------|--------------------|--------------------------------------|
+| POST   | `/describe/`       | Classify and summarise a complaint   |
+| POST   | `/recommend/`      | Generate investigation recommendations|
+| POST   | `/generate-report/`| Produce a formal investigation report|
+| GET    | `/health/`         | Service health check                 |
 
-## Local Setup
+## Quick Start
+
+### 1. Environment Setup
 
 ```bash
-# 1. Clone and navigate
-cd ai-service
-
-# 2. Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Configure environment
 cp .env.example .env
-# Edit .env and set your GROQ_API_KEY
+# Edit .env and add your GROQ_API_KEY
+```
 
-# 5. Test Groq connectivity
-python test_groq.py
+### 2. Run with Docker
 
-# 6. Start the service
+```bash
+docker build -t tool70-ai .
+docker run -p 5000:5000 --env-file .env tool70-ai
+```
+
+### 3. Run Locally
+
+```bash
+python -m venv venv
+source venv/bin/activate   # Linux/Mac
+venv\Scripts\activate      # Windows
+pip install -r requirements.txt
 python app.py
 ```
 
+### 4. Run Tests
+
+```bash
+pytest tests/ -v
+```
+
+## Example Request
+
+```bash
+curl -X POST http://localhost:5000/describe/ \
+  -H "Content-Type: application/json" \
+  -d '{"text": "I witnessed my manager approving fake invoices worth $50,000 to a shell company owned by his brother-in-law."}'
+```
+
+## Security Features
+
+- **Rate Limiting**: 30 requests/minute per IP via flask-limiter
+- **Input Sanitisation**: HTML stripping + prompt-injection detection
+- **Security Headers**: X-Content-Type-Options, X-Frame-Options, CSP, etc.
+- **Fail-Silent Caching**: Redis failures never crash the app
+- **Graceful Degradation**: Fallback responses when Groq is unavailable
+
+## Tech Stack
+
+| Component              | Technology                      |
+|------------------------|---------------------------------|
+| Web Framework          | Flask 3.0.3                     |
+| LLM Provider           | Groq (llama-3.3-70b-versatile) |
+| Caching                | Redis 7 (TTL 900s)             |
+| Vector Store           | ChromaDB + all-MiniLM-L6-v2    |
+| Rate Limiting          | flask-limiter 3.8.0            |
+| Containerisation       | Docker (python:3.11-slim)       |
+| Testing                | pytest 8.3.3                    |
+
 ## Environment Variables
 
-| Variable               | Required | Default                                          | Description                           |
-|------------------------|----------|--------------------------------------------------|---------------------------------------|
-| `GROQ_API_KEY`         | Yes      | —                                                | Groq API authentication key           |
-| `GROQ_TIMEOUT_SECONDS` | No       | `25`                                             | Groq API request timeout (seconds)    |
-| `AI_PORT`              | No       | `5000`                                           | Flask server port                     |
-| `FLASK_DEBUG`          | No       | `false`                                          | Enable Flask debug mode               |
-| `REDIS_URL`            | No       | —                                                | Redis connection URL for caching      |
-| `CHROMA_PERSIST_DIR`   | No       | `./chroma_data`                                  | ChromaDB persistence directory        |
-| `ALLOWED_ORIGINS`      | No       | `http://localhost:8080,http://127.0.0.1:8080`    | CORS allowed origins (comma-separated)|
+| Variable       | Description               | Default              |
+|----------------|---------------------------|----------------------|
+| `GROQ_API_KEY` | Groq API key (required)   | —                    |
+| `REDIS_URL`    | Redis connection URI      | `redis://redis:6379` |
+| `FLASK_ENV`    | Flask environment         | `production`         |
+| `FLASK_DEBUG`  | Debug mode (0 or 1)       | `0`                  |
 
-## API Reference
+## License
 
-### `GET /health`
-
-Health check with system metrics.
-
-**Response** `200`:
-```json
-{
-  "status": "ok",
-  "model": "llama-3.3-70b-versatile",
-  "embedding_model": "all-MiniLM-L6-v2",
-  "vector_store_documents": 10,
-  "uptime_seconds": 120.5,
-  "avg_response_ms": 450.2,
-  "endpoint_avg_ms": {},
-  "slow_endpoints": [],
-  "performance_target_ms": 2000,
-  "timestamp": "2024-01-01T00:00:00Z"
-}
-```
-
-### `GET /ping`
-
-Simple liveness probe.
-
-**Response** `200`:
-```json
-{"pong": true}
-```
-
-### `POST /describe`
-
-Classify and summarise a whistleblower report.
-
-**Request**:
-```json
-{"text": "I discovered my manager submitting false expense reports..."}
-```
-
-**Response** `200`:
-```json
-{
-  "category": "Fraud",
-  "severity": "High",
-  "summary": "Employee reported financial irregularities...",
-  "key_entities": ["Finance Department", "Q3 Reports"],
-  "recommended_action": "Initiate formal investigation.",
-  "generated_at": "2024-01-01T00:00:00Z",
-  "is_fallback": false
-}
-```
-
-### `POST /recommend`
-
-Generate compliance recommendations.
-
-**Request**:
-```json
-{"text": "A colleague reported workplace harassment..."}
-```
-
-**Response** `200`:
-```json
-{
-  "recommendations": [
-    {"action_type": "Investigation", "description": "Start formal inquiry.", "priority": "High"},
-    {"action_type": "HR Review", "description": "Engage HR department.", "priority": "Medium"},
-    {"action_type": "Documentation", "description": "Preserve evidence.", "priority": "Low"}
-  ],
-  "is_fallback": false,
-  "generated_at": "2024-01-01T00:00:00Z"
-}
-```
-
-### `POST /generate-report`
-
-Generate a formal compliance report.
-
-**Request**:
-```json
-{"text": "Safety violations observed in warehouse operations..."}
-```
-
-**Response** `200`:
-```json
-{
-  "title": "Safety Compliance Investigation Report",
-  "summary": "Executive summary of the safety incident...",
-  "overview": "Detailed overview of the warehouse safety violations...",
-  "key_items": ["Forklift certification gap", "Missing safety equipment"],
-  "recommendations": ["Mandatory retraining", "Equipment audit"],
-  "generated_at": "2024-01-01T00:00:00Z",
-  "is_fallback": false
-}
-```
-
-### `POST /query`
-
-Query the compliance knowledge base using RAG.
-
-**Request**:
-```json
-{"query": "What is the procedure for reporting financial fraud?"}
-```
-
-**Response** `200`:
-```json
-{
-  "answer": "Financial fraud should be reported immediately to the ethics hotline...",
-  "sources": [{"source": "Financial Fraud & SOX/Dodd-Frank Policy", "relevance": 0.85}],
-  "confidence": "High",
-  "generated_at": "2024-01-01T00:00:00Z",
-  "is_fallback": false
-}
-```
-
-## Running Tests
-
-```bash
-# Set environment for tests
-SKIP_GROQ_VALIDATION=true GROQ_API_KEY=test-key pytest tests/ -v
-
-# Windows PowerShell
-$env:SKIP_GROQ_VALIDATION="true"; $env:GROQ_API_KEY="test-key"; pytest tests/ -v
-```
-
-## Docker
-
-```bash
-# Build
-docker build -t ai-service .
-
-# Run
-docker run -p 5000:5000 --env-file .env ai-service
-
-# Health check
-curl http://localhost:5000/health
-```
-
-## Troubleshooting
-
-| Issue | Cause | Fix |
-|-------|-------|-----|
-| `RuntimeError: GROQ_API_KEY is missing` | `.env` not configured | Copy `.env.example` to `.env` and set your Groq API key |
-| `Connection refused on port 5000` | Service not running | Run `python app.py` or check Docker container status |
-| `Rate limit exceeded (429)` | Too many requests | Wait 60 seconds; rate limit is 30 req/min/IP |
+Internal capstone project — not for public distribution.
