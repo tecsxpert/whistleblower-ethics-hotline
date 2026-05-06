@@ -6,5 +6,5 @@ chroma_data/
 *.class
 .idea/
 *.iml
-.env 
-venv/ 
+venv/
+.vscode/ 
