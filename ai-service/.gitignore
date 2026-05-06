@@ -1,7 +1,11 @@
-.env
 venv/
 __pycache__/
 .vscode/
 backend/
 frontend/
 chroma_data/
+*.pyc
+.env
+chroma_data/
+*.egg-info/
+.pytest_cache/

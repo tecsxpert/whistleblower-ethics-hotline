@@ -1,8 +1,15 @@
 flask==3.0.3
 flask-limiter==3.8.0
 gunicorn==22.0.0
+Flask==3.0.3
+flask-limiter==3.8.0
 python-dotenv==1.0.1
 redis==5.0.8
 chromadb==0.5.5
 sentence-transformers==3.0.1
 requests==2.32.3
+Limits==3.13.0
+chromadb==0.5.23
+gunicorn==22.0.0
+redis==5.0.8
+Flask-Cors==4.0.1
