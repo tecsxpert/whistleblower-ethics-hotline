@@ -1,13 +1,12 @@
 """
 Tool-70 — Whistleblower & Ethics Hotline AI Microservice
-Flask application factory with security hardening.
-ai-service — Flask microservice for Tool-70 Whistleblower & Ethics Hotline
-Port: 5000
+Flask application factory with production-grade security hardening.
 """
 
 import os
 import time
 import logging
+from datetime import datetime, timezone
 from flask import Flask, jsonify
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -28,8 +27,15 @@ def create_app() -> Flask:
 
     app = Flask(__name__)
 
-    # ── Payload size protection: 1 MB max ────────────────────────────
-    app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024
+    # ── Production config ────────────────────────────────────────────
+    # Limit request body size to 16 KB — prevents memory exhaustion
+    app.config["MAX_CONTENT_LENGTH"] = 16 * 1024  # 16 KB
+
+    # Disable debug in production (read from env var for flexibility)
+    app.config["DEBUG"] = os.getenv("FLASK_DEBUG", "false").lower() == "true"
+
+    # Disable default exception propagation to prevent stack trace leakage
+    app.config["PROPAGATE_EXCEPTIONS"] = False
 
     # ── Rate limiter: 30 requests / minute per IP ────────────────────
     # Uses memory:// so tests pass without a running Redis instance.
@@ -54,32 +60,60 @@ def create_app() -> Flask:
     # ── Security headers (every response) ────────────────────────────
     @app.after_request
     def add_security_headers(response):
+        # Prevent MIME-type sniffing
         response.headers["X-Content-Type-Options"] = "nosniff"
+
+        # Prevent clickjacking
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-XSS-Protection"] = "1; mode=block"
+
+        # Strict CSP — this is a pure API, no resources needed
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; frame-ancestors 'none'"
+        )
+
+        # Enforce HTTPS for 1 year
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+
+        # Prevent caching of sensitive AI responses
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+        response.headers["Pragma"] = "no-cache"
+
+        # Disable browser feature access
+        response.headers["Permissions-Policy"] = (
+            "geolocation=(), microphone=(), camera=(), payment=()"
+        )
+
+        # Referrer policy
         response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Content-Security-Policy"] = "default-src 'none'"
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["Permissions-Policy"] = "geolocation=()"
-        response.headers["Strict-Transport-Security"] = "max-age=31536000"
+
+        # Remove server fingerprinting headers
+        response.headers.pop("Server", None)
+        response.headers.pop("X-Powered-By", None)
+
         return response
 
-    # ── Global error handlers (JSON) ─────────────────────────────────
+    # ── Global error handlers (JSON, no stack trace leakage) ─────────
     @app.errorhandler(400)
     def bad_request(error):
-        return jsonify({"error": "Bad request", "message": str(error)}), 400
+        return jsonify({"error": "Bad request", "status": 400}), 400
 
     @app.errorhandler(404)
     def not_found(error):
-        return jsonify({"error": "Not found", "message": str(error)}), 404
+        return jsonify({"error": "Endpoint not found", "status": 404}), 404
+
+    @app.errorhandler(405)
+    def method_not_allowed(error):
+        return jsonify({"error": "Method not allowed", "status": 405}), 405
 
     @app.errorhandler(413)
     def payload_too_large(error):
         return (
             jsonify(
                 {
-                    "error": "Payload too large",
-                    "message": "Request body must not exceed 1 MB.",
+                    "error": "Request body too large. Maximum size is 16 KB.",
+                    "status": 413,
                 }
             ),
             413,
@@ -98,12 +132,12 @@ def create_app() -> Flask:
         )
 
     @app.errorhandler(429)
-    def rate_limited(error):
+    def rate_limit_exceeded(error):
         return (
             jsonify(
                 {
-                    "error": "Rate limit exceeded",
-                    "message": "Maximum 30 requests per minute. Please retry later.",
+                    "error": "Rate limit exceeded. Maximum 30 requests per minute.",
+                    "status": 429,
                 }
             ),
             429,
@@ -111,252 +145,36 @@ def create_app() -> Flask:
 
     @app.errorhandler(500)
     def internal_error(error):
-        logger.exception("Internal server error")
+        logger.error("Internal server error: %s", error, exc_info=True)
         return (
             jsonify(
                 {
-                    "error": "Internal server error",
-                    "message": "An unexpected error occurred.",
+                    "error": "AI service temporarily unavailable. Please try again.",
+                    "is_fallback": True,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "status": 500,
                 }
             ),
             500,
         )
-import threading
-from collections import deque
-from datetime import datetime, timezone
-from pathlib import Path
 
-from flask import Flask, jsonify, g, request
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
-from dotenv import load_dotenv
-
-# CR-2 FIX: Module-level lock protects the RESPONSE_TIMES deque from
-# concurrent append + iteration across Gunicorn threads.
-_times_lock = threading.Lock()
-
-# Named constant for response time window size
-_RESPONSE_WINDOW = 100
-
-
-def create_app() -> Flask:
-    """
-    Application factory.
-
-    Calling load_dotenv() here ensures env vars are set before any
-    blueprint or service module is imported, without needing mid-file
-    imports with # noqa: E402 suppression.
-    """
-    # Always load .env from the same directory as app.py — works correctly
-    # regardless of which folder the user runs `python app.py` from.
-    _env_path = Path(__file__).resolve().parent / ".env"
-    load_dotenv(dotenv_path=_env_path)
-
-    # ── Logging ────────────────────────────────────────────────────────────────
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    )
-    logger = logging.getLogger(__name__)
-
-    application = Flask(__name__)
-
-    # ── Validate critical env vars at startup (fail fast) ─────────────────────
-    _groq_key = os.getenv("GROQ_API_KEY", "")
-    if not _groq_key or _groq_key == "your_groq_api_key_here":
-        logger.error(
-            "GROQ_API_KEY is not set or is still the placeholder value. "
-            "Copy .env.example to ai-service/.env and set a real key. "
-            "Get a free key at https://console.groq.com"
+    @app.errorhandler(Exception)
+    def unhandled_exception(error):
+        logger.error("Unhandled exception: %s", error, exc_info=True)
+        return (
+            jsonify(
+                {
+                    "error": "AI service temporarily unavailable. Please try again.",
+                    "is_fallback": True,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ),
+            500,
         )
-        raise RuntimeError(
-            "GROQ_API_KEY is missing. Set it in ai-service/.env before starting."
-        )
-    else:
-        # HI-2 FIX: Log boolean confirmation, not key length — length is
-        # distinctive metadata that narrows the keyspace.
-        logger.info("GROQ_API_KEY loaded successfully.")
-
-    # CR-1 FIX: Initialise RESPONSE_TIMES deque BEFORE any hooks that use it.
-    application.config["RESPONSE_TIMES"] = deque(maxlen=_RESPONSE_WINDOW)
-
-    # ── Rate limiter: 30 requests / minute per IP ──────────────────────────────
-    # Fix #4: Use Redis for shared state across Gunicorn workers.
-    # Falls back to memory:// only when REDIS_URL is not set (local dev without Redis).
-    redis_url = os.getenv("REDIS_URL")
-    if redis_url is None:
-        logger.warning(
-            "REDIS_URL not set — rate limiter using in-memory storage (dev only). "
-            "Set REDIS_URL in .env for production."
-        )
-    limiter = Limiter(
-        key_func=get_remote_address,
-        app=application,
-        default_limits=["30 per minute"],
-        storage_uri=redis_url or "memory://",
-    )
-    application.config["LIMITER"] = limiter
-
-    # ── CORS protection (Day 7) ────────────────────────────────────────────────
-    # Only allow requests from the Java backend (port 8080) and localhost.
-    # Deny all browser-originated cross-origin requests from unknown origins.
-    try:
-        from flask_cors import CORS
-
-        allowed_origins = os.getenv(
-            "ALLOWED_ORIGINS",
-            "http://localhost:8080,http://127.0.0.1:8080"
-        )
-        CORS(
-            application,
-            origins=allowed_origins.split(","),
-            methods=["GET", "POST"],
-            allow_headers=["Content-Type", "X-Request-ID"],
-            max_age=600,
-        )
-        logger.info("CORS configured — allowed origins: %s", allowed_origins)
-    except ImportError:
-        logger.warning(
-            "flask-cors is not installed — CORS headers will NOT be set. "
-            "Install Flask-Cors to enable CORS protection."
-        )
-
-    # I-7 FIX: Cap incoming request body size before route handlers run.
-    # Field-level 5000-char checks fire AFTER Flask reads the full body;
-    # this rejects oversized payloads early (16 KB is ample for any valid request).
-    _MAX_CONTENT_BYTES = 16 * 1024  # 16 KB
-    application.config["MAX_CONTENT_LENGTH"] = _MAX_CONTENT_BYTES
-
-    # ── Register middleware ────────────────────────────────────────────────────
-    from routes.middleware import sanitise_middleware
-    application.before_request(sanitise_middleware)
-
-    @application.before_request
-    def record_start_time():
-        g.start_time = time.time()
-
-    # ── Register blueprints ────────────────────────────────────────────────────
-    from routes.describe import describe_bp
-    from routes.recommend import recommend_bp
-    from routes.report import report_bp
-    from routes.query import query_bp
-
-    application.register_blueprint(describe_bp)
-    application.register_blueprint(recommend_bp)
-    application.register_blueprint(report_bp)
-    application.register_blueprint(query_bp)
-
-    # ── Security response headers (I-6) ──────────────────────────────────────
-    @application.after_request
-    def security_headers(response):
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        # X-XSS-Protection is deprecated in modern browsers (Chrome removed
-        # XSS Auditor in 2019) but retained for legacy IE compatibility.
-        response.headers["X-XSS-Protection"] = "1; mode=block"
-        response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        # Remove server fingerprint header
-        response.headers.pop("Server", None)
-        # HI-1 FIX: Only set X-Request-ID if the middleware generated one.
-        # An empty string is worse than absent — some proxies treat "" as valid.
-        request_id = getattr(g, "request_id", None)
-        if request_id:
-            response.headers["X-Request-ID"] = request_id
-        return response
-
-    @application.after_request
-    def record_response_time(response):
-        start = getattr(g, "start_time", None)
-        if start is not None:
-            elapsed = time.time() - start
-            with _times_lock:
-                times = application.config.get("RESPONSE_TIMES")
-                if times is not None:
-                    times.append(elapsed)
-        return response
-
-    # ── Fix #15: Capture start time BEFORE slow VectorStore init ──────────────
-    # The /health uptime metric must reflect the true service start time.
-    application.config["START_TIME"] = time.time()
-
-    # ── Pre-load vector store (model + ChromaDB collection) ───────────────────
-    try:
-        from services.vector_store import initialise as _vs_init
-        _vs_init()
-        logger.info("VectorStore pre-load complete.")
-    except Exception as _vs_exc:
-        logger.warning(
-            "VectorStore pre-load failed — /query will initialise lazily. Error: %s",
-            _vs_exc,
-        )
-
-    # ── Health endpoint ────────────────────────────────────────────────────────
-    @application.route("/health", methods=["GET"])
-    def health():
-        # ME-2 FIX: Import constants from their source modules so /health
-        # never drifts out of sync with the actual model in use.
-        from services.groq_client import GROQ_MODEL
-        from services.vector_store import EMBEDDING_MODEL_NAME, document_count
-
-        uptime_seconds = int(time.time() - application.config["START_TIME"])
-        try:
-            doc_count = document_count()
-        except Exception:
-            doc_count = -1
-        with _times_lock:
-            times = list(application.config.get("RESPONSE_TIMES", []))
-        avg_response_ms = round(sum(times) / len(times) * 1000, 1) if times else 0.0
-        return jsonify({
-            "status": "ok",
-            "model": GROQ_MODEL,
-            "embedding_model": EMBEDDING_MODEL_NAME,
-            "vector_store_documents": doc_count,
-            "uptime_seconds": uptime_seconds,
-            "avg_response_ms": avg_response_ms,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }), 200
-
-    # ── Ping endpoint (Day 7 — OWASP ZAP liveness probe) ─────────────────────
-    @application.route("/ping", methods=["GET"])
-    def ping():
-        """Lightweight liveness probe — used by ZAP and load balancers."""
-        return jsonify({"pong": True}), 200
-
-    # ── Global error handlers ──────────────────────────────────────────────────
-    @application.errorhandler(404)
-    def not_found(_err):
-        return jsonify({"error": "Endpoint not found."}), 404
-
-    @application.errorhandler(405)
-    def method_not_allowed(_err):
-        return jsonify({"error": "Method not allowed."}), 405
-
-    # HI-1 FIX: Flask's MAX_CONTENT_LENGTH raises RequestEntityTooLarge which
-    # returns an HTML page by default.  Return JSON so the Java backend can
-    # parse it correctly.
-    @application.errorhandler(413)
-    def payload_too_large(_err):
-        return jsonify({"error": "Request payload too large."}), 413
-
-    @application.errorhandler(429)
-    def rate_limit_exceeded(_err):
-        return jsonify({"error": "Rate limit exceeded. Try again in a moment."}), 429
-
-    @application.errorhandler(500)
-    def internal_error(_err):
-        logger.exception("Unhandled internal error")
-        return jsonify({"error": "Internal server error."}), 500
-
-    return application
 
     logger.info("Tool-70 AI Microservice initialised successfully.")
     return app
 
-app = create_app()
 
 # ── Module-level app instance for gunicorn (`app:app`) ───────────────
 app = create_app()
@@ -364,10 +182,3 @@ app = create_app()
 # ── Entry point (local development) ─────────────────────────────────
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)
-# ── Entry point ────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    _logger = logging.getLogger(__name__)
-    port = int(os.getenv("AI_PORT", 5000))
-    debug = os.getenv("FLASK_DEBUG", "false").lower() == "true"
-    _logger.info("Starting ai-service on port %d (debug=%s)", port, debug)
-    app.run(host="0.0.0.0", port=port, debug=debug)

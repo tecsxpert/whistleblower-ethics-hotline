@@ -1,11 +1,24 @@
+# Environment
+.env
 venv/
+
+# Python
 __pycache__/
+*.pyc
+
+# VS Code
 .vscode/
+
+# Project folders
 backend/
 frontend/
+
+# ChromaDB
 chroma_data/
-*.pyc
-.env
-chroma_data/
-*.egg-info/
-.pytest_cache/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -20,13 +20,12 @@ class TestHealth:
         assert data["model"] == "llama-3.3-70b-versatile"
         assert "uptime_seconds" in data
         assert isinstance(data["uptime_seconds"], float)
-        assert "avg_response_ms" in data
-        assert isinstance(data["avg_response_ms"], float)
         assert data["redis_connected"] is True
         assert data["chromadb_connected"] is True
-        assert "/describe" in data["endpoints"]
-        assert "/recommend" in data["endpoints"]
-        assert "/generate-report" in data["endpoints"]
-        assert "/health" in data["endpoints"]
+        assert isinstance(data["endpoints"], dict)
+        assert "/describe" in data["available_endpoints"]
+        assert "/recommend" in data["available_endpoints"]
+        assert "/generate-report" in data["available_endpoints"]
+        assert "/health" in data["available_endpoints"]
         assert data["rate_limit"] == "30 per minute"
         assert data["cache_ttl_seconds"] == 900

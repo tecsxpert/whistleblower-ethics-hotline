@@ -1,44 +1,72 @@
+# ai-service/Dockerfile
+# =====================
+# Tool-70 — Whistleblower & Ethics Hotline
+# AI Microservice — Production Dockerfile
+#
+# Changes from dev version:
+#   - Uses gunicorn (production WSGI server) instead of python app.py
+#   - Non-root user for security hardening
+#   - .dockerignore should exclude: __pycache__, .env, *.pyc, chroma_data/
+
 FROM python:3.11-slim
 
-WORKDIR /app
-
-# Install build tools needed by some chromadb deps (removed in final layer
-# if using multi-stage; kept here for simplicity in single-stage build).
+# --------------------------------------------------------------------------
+# System dependencies
+# --------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies first (layer caching)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# --------------------------------------------------------------------------
+# Non-root user (security best practice)
+# --------------------------------------------------------------------------
+RUN groupadd --gid 1001 appgroup && \
+    useradd --uid 1001 --gid appgroup --shell /bin/bash --create-home appuser
 
+# --------------------------------------------------------------------------
+# Working directory
+# --------------------------------------------------------------------------
+WORKDIR /app
+
+# --------------------------------------------------------------------------
+# Install Python dependencies
+# Install before copying app code so layer is cached when only code changes
+# --------------------------------------------------------------------------
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir gunicorn==21.2.0
+
+# --------------------------------------------------------------------------
 # Pre-download the sentence-transformer model so container starts fast
+# --------------------------------------------------------------------------
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
+# --------------------------------------------------------------------------
 # Copy application code
-COPY . .
+# --------------------------------------------------------------------------
+COPY --chown=appuser:appgroup . .
 
-# I-4 FIX: Run as a non-root user — standard security practice for production
-# containers. If there is any path traversal / code injection vulnerability,
-# the attacker gets an unprivileged user instead of root.
-RUN adduser --disabled-password --gecos '' appuser \
-    && chown -R appuser:appuser /app
+# --------------------------------------------------------------------------
+# Switch to non-root user
+# --------------------------------------------------------------------------
 USER appuser
 
-# Fix #16: Removed VOLUME declaration — anonymous volumes silently persist
-# chroma_data in an untracked Docker location and break `docker-compose down -v`.
-# Volume mounts are defined exclusively in docker-compose.yml.
-
+# --------------------------------------------------------------------------
+# Expose port
+# --------------------------------------------------------------------------
 EXPOSE 5000
 
-CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:5000", "app:app"]
-# HI-13 FIX: HEALTHCHECK so Docker / ECS / Swarm can detect if the app is hung.
-# Requires curl (installed above).
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+# --------------------------------------------------------------------------
+# Health check
+# --------------------------------------------------------------------------
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:5000/health || exit 1
 
-# Fix #5: Use Gunicorn (production WSGI server) instead of Flask's dev server.
-# workers=1 keeps Chroma's in-memory collection in a single process.
-# threads=4 handles concurrent requests within that process.
-CMD ["gunicorn", "--workers", "1", "--threads", "4", \
-     "--bind", "0.0.0.0:5000", "--timeout", "120", "app:app"]
+# --------------------------------------------------------------------------
+# Production entrypoint
+# Replaces: python app.py
+# 2 workers (-w 2) — increase to (2 * CPU_cores + 1) for production hardware
+# Timeout 120s to handle slow Groq API responses gracefully
+# --------------------------------------------------------------------------
+CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:5000", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", "app:app"]

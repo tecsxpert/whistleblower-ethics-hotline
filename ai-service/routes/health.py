@@ -8,7 +8,7 @@ import time
 from flask import Blueprint, jsonify
 
 from services.groq_client import MODEL_NAME
-from services.metrics import last_100_response_times, metrics_lock
+from services.metrics import metrics
 from services.cache import is_redis_connected, DEFAULT_TTL
 from services.vector_store import is_chromadb_connected
 
@@ -24,10 +24,8 @@ def health():
 
     uptime = time.time() - app_start_time
 
-    # Thread-safe read of response times
-    with metrics_lock:
-        times = list(last_100_response_times)
-    avg_ms = round(sum(times) / len(times), 2) if times else 0.0
+    # Get per-endpoint metrics from the new MetricsCollector
+    all_stats = metrics.get_all_stats()
 
     try:
         redis_ok = is_redis_connected()
@@ -45,10 +43,10 @@ def health():
         "status": status,
         "model": MODEL_NAME,
         "uptime_seconds": round(uptime, 2),
-        "avg_response_ms": avg_ms,
+        "endpoints": all_stats.get("endpoints", {}),
         "redis_connected": redis_ok,
         "chromadb_connected": chroma_ok,
-        "endpoints": ["/describe", "/recommend", "/generate-report", "/health"],
+        "available_endpoints": ["/describe", "/recommend", "/generate-report", "/health"],
         "rate_limit": "30 per minute",
         "cache_ttl_seconds": DEFAULT_TTL,
     }

@@ -1,305 +1,544 @@
 #!/usr/bin/env python3
 """
-Prompt quality evaluator — scores AI endpoint outputs against 10 whistleblower scenarios.
+AI Quality Evaluation Script — Tool-70 Whistleblower & Ethics Hotline
+Tests all 3 AI endpoints with 10 realistic inputs each.
+Measures response time, structure correctness, and fallback usage.
+Prints average quality score (1–5 scale).
 
 Usage:
-    python prompt_eval.py          # mock mode (default, no API calls)
-    python prompt_eval.py --live   # live mode (calls Groq API)
+    python prompt_eval.py                          # mock mode (default)
+    python prompt_eval.py --live                   # live API calls
+    python prompt_eval.py --live --host http://localhost:5000
+    python prompt_eval.py --live --endpoint describe
 """
 
 import argparse
 import json
 import sys
 import time
+from datetime import datetime
 
 import requests
 
-BASE_URL = "http://localhost:5000"
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 
-# ── 10 evaluation scenarios ──────────────────────────────────────────────
+DEFAULT_HOST = "http://localhost:5000"
+REQUEST_TIMEOUT = 30  # seconds
+
+# ---------------------------------------------------------------------------
+# Test Cases — 10 realistic whistleblower scenarios
+# All endpoints accept {"text": "..."} as the only required input.
+# ---------------------------------------------------------------------------
 
 SCENARIOS = [
     {
         "id": 1,
-        "category": "Fraud",
+        "category": "Bribery",
         "text": (
-            "My supervisor has been submitting false expense reports for over six months. "
-            "The fraudulent amounts total approximately $75,000. I have copies of receipts "
-            "that show the real amounts are significantly lower than what was claimed."
+            "My department manager explicitly asked me to pay ₹15,000 in cash to "
+            "approve my project proposal. He said he would reject it otherwise. "
+            "This happened on 3 April 2026 in his office."
         ),
     },
     {
         "id": 2,
-        "category": "Harassment",
+        "category": "Financial Fraud",
         "text": (
-            "A senior manager in the marketing department has been making repeated unwanted "
-            "advances toward a junior employee. Multiple colleagues have witnessed the behaviour "
-            "and the victim has documented the incidents in writing."
+            "A senior employee submits duplicate travel expense claims each month. "
+            "I have seen him submit the same hotel bill twice in different claim "
+            "periods. Estimated fraud is around ₹8,000 per month."
         ),
     },
     {
         "id": 3,
-        "category": "Safety",
+        "category": "Workplace Harassment",
         "text": (
-            "The warehouse team is being forced to operate forklifts without proper certification. "
-            "Last week a near-miss incident occurred when an untrained operator dropped a pallet "
-            "from eight feet. No injury report was filed."
+            "A team lead makes derogatory gender-based comments during team meetings. "
+            "Multiple colleagues have noticed this behaviour over the past two months. "
+            "Complaints to HR have been ignored."
         ),
     },
     {
         "id": 4,
-        "category": "Corruption",
+        "category": "Data Breach",
         "text": (
-            "I believe our procurement manager is receiving kickbacks from a vendor. Contracts "
-            "are consistently awarded to the same supplier despite higher prices, and I have seen "
-            "the manager accept gifts during vendor meetings."
+            "I observed a colleague downloading confidential client lists and sending "
+            "them via personal email. The recipient domain appears to belong to a "
+            "direct competitor. This occurred last week."
         ),
     },
     {
         "id": 5,
-        "category": "Discrimination",
+        "category": "Safety Violation",
         "text": (
-            "Several qualified female candidates were passed over for promotion in favour of less "
-            "experienced male colleagues. The department head has made comments suggesting that "
-            "leadership roles are better suited to men."
+            "Construction workers at site B are not being given helmets or safety "
+            "harnesses despite the work involving heights above 10 metres. The site "
+            "supervisor says the equipment budget was cut."
         ),
     },
     {
         "id": 6,
-        "category": "Retaliation",
+        "category": "Conflict of Interest",
         "text": (
-            "After I reported safety violations to the compliance team, my shifts were changed "
-            "without explanation and I was excluded from team meetings. My performance review "
-            "was downgraded despite consistently exceeding targets."
+            "A cleaning services contract worth ₹12 lakhs was awarded to a vendor "
+            "who is the relative of our procurement head, without any competitive "
+            "bidding process or documentation."
         ),
     },
     {
         "id": 7,
-        "category": "Data Privacy",
+        "category": "Quality Fraud",
         "text": (
-            "Customer personal data including credit card numbers was found in an unencrypted "
-            "spreadsheet shared on a public network drive. At least 2,000 records are exposed "
-            "and the file has been accessible for over a month."
+            "Quality control reports for batch QC-2026-44 were altered to show "
+            "passing results. The original test showed 18 out of 50 units failing "
+            "the stress test. This batch has already shipped to customers."
         ),
     },
     {
         "id": 8,
-        "category": "Conflict of Interest",
+        "category": "Retaliation",
         "text": (
-            "The VP of Engineering owns a 40% stake in a consulting firm that was awarded a "
-            "major contract by our company. This ownership was not disclosed in the annual "
-            "conflict-of-interest declaration."
+            "After I reported a billing irregularity three months ago, my manager "
+            "has removed me from key projects, excluded me from meetings, and given "
+            "me a poor performance rating without justification."
         ),
     },
     {
         "id": 9,
-        "category": "Policy Violation",
+        "category": "Environmental Violation",
         "text": (
-            "Employees in the London office are routinely working 60+ hours per week without "
-            "overtime compensation. Management has instructed staff not to log hours beyond the "
-            "standard 40-hour week to avoid scrutiny."
+            "Chemical waste from the factory is being discharged into the drainage "
+            "ditch behind the east compound wall at night. Local residents have "
+            "complained about foul smells. No environmental clearance exists for this."
         ),
     },
     {
         "id": 10,
-        "category": "Safety",
+        "category": "Payroll Fraud",
         "text": (
-            "Chemical storage procedures in Lab B violate OSHA regulations. Incompatible "
-            "chemicals are stored together, safety showers are blocked, and eyewash stations "
-            "have not been inspected in over a year."
+            "Two employees on the payroll — IDs 4892 and 4901 — do not appear to "
+            "work in the office and are unknown to colleagues. Salaries of ₹45,000 "
+            "each are being disbursed monthly."
         ),
     },
 ]
 
+# ---------------------------------------------------------------------------
+# Expected response keys (from routes/describe.py, recommend.py, report.py)
+# ---------------------------------------------------------------------------
 
-# ── Scoring functions ────────────────────────────────────────────────────
+DESCRIBE_REQUIRED_KEYS = {"summary", "severity", "category", "recommended_action", "generated_at"}
+RECOMMEND_REQUIRED_KEYS = {"recommendations"}
+REPORT_REQUIRED_KEYS = {"title", "summary", "overview", "key_items", "recommendations", "generated_at"}
 
+# ---------------------------------------------------------------------------
+# Scoring Functions (1–5 scale)
+# ---------------------------------------------------------------------------
 
-def score_describe(data: dict) -> float:
-    """Score /describe output 0-10."""
-    score = 0.0
-    if data.get("category"):
-        score += 2.5
-    if data.get("severity") in ("Critical", "High", "Medium", "Low"):
-        score += 2.0
-    if data.get("summary") and len(data["summary"]) > 10:
-        score += 2.0
-    if isinstance(data.get("key_entities"), list) and len(data["key_entities"]) > 0:
-        score += 1.5
-    if data.get("recommended_action") and len(data["recommended_action"]) > 5:
-        score += 2.0
-    return min(score, 10.0)
-
-
-def score_recommend(data: dict) -> float:
-    """Score /recommend output 0-10."""
-    score = 0.0
-    recs = data.get("recommendations", [])
-    if isinstance(recs, list) and len(recs) >= 3:
-        score += 3.0
-    for rec in recs[:3]:
-        if rec.get("action_type"):
-            score += 0.8
-        if rec.get("description") and len(rec["description"]) > 10:
-            score += 0.8
-        if rec.get("priority") in ("High", "Medium", "Low"):
-            score += 0.7
-    return min(score, 10.0)
+RESET = "\033[0m"
+BOLD = "\033[1m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+RED = "\033[31m"
+CYAN = "\033[36m"
 
 
-def score_report(data: dict) -> float:
-    """Score /generate-report output 0-10."""
-    score = 0.0
-    if data.get("title") and len(data["title"]) > 5:
-        score += 2.0
-    if data.get("summary") and len(data["summary"]) > 20:
-        score += 2.0
-    if data.get("overview") and len(data["overview"]) > 30:
-        score += 2.0
-    if isinstance(data.get("key_items"), list) and len(data["key_items"]) >= 2:
-        score += 2.0
-    if isinstance(data.get("recommendations"), list) and len(data["recommendations"]) >= 2:
-        score += 2.0
-    return min(score, 10.0)
+def score_describe(response_json: dict) -> tuple[int, list[str]]:
+    """Score /describe response 1–5."""
+    issues = []
+    score = 5
+
+    missing = DESCRIBE_REQUIRED_KEYS - set(response_json.keys())
+    if missing:
+        score -= len(missing)
+        issues.append(f"Missing keys: {missing}")
+
+    if response_json.get("is_fallback"):
+        score -= 2
+        issues.append("Fallback response used")
+
+    severity = response_json.get("severity", "")
+    if severity not in ("Low", "Medium", "High", "Critical", "Unknown"):
+        score -= 1
+        issues.append(f"Invalid severity value: '{severity}'")
+
+    summary = response_json.get("summary", "")
+    if len(summary) < 20:
+        score -= 1
+        issues.append(f"Summary too short ({len(summary)} chars)")
+
+    return (max(1, score), issues)
 
 
-# ── Mock evaluator ───────────────────────────────────────────────────────
+def score_recommend(response_json: dict) -> tuple[int, list[str]]:
+    """Score /recommend response 1–5."""
+    issues = []
+    score = 5
+
+    if "recommendations" not in response_json:
+        issues.append("Missing 'recommendations' key")
+        return (1, issues)
+
+    recs = response_json["recommendations"]
+    if not isinstance(recs, list):
+        issues.append("'recommendations' is not a list")
+        return (1, issues)
+
+    if len(recs) < 3:
+        score -= 2
+        issues.append(f"Only {len(recs)} recommendations (expected ≥3)")
+
+    if response_json.get("is_fallback"):
+        score -= 2
+        issues.append("Fallback response used")
+
+    # Validate structure of first 3 recommendations
+    for i, rec in enumerate(recs[:3]):
+        for key in ("action_type", "description", "priority"):
+            if key not in rec:
+                score -= 0.5
+                issues.append(f"Recommendation {i+1} missing '{key}'")
+
+    return (max(1, int(score)), issues)
+
+
+def score_report(response_json: dict) -> tuple[int, list[str]]:
+    """Score /generate-report response 1–5."""
+    issues = []
+    score = 5
+
+    missing = REPORT_REQUIRED_KEYS - set(response_json.keys())
+    if missing:
+        score -= len(missing)
+        issues.append(f"Missing keys: {missing}")
+
+    if response_json.get("is_fallback"):
+        score -= 2
+        issues.append("Fallback response used")
+
+    overview = response_json.get("overview", "")
+    if len(overview) < 50:
+        score -= 1
+        issues.append(f"Overview too short ({len(overview)} chars)")
+
+    key_items = response_json.get("key_items", [])
+    if not isinstance(key_items, list) or len(key_items) < 2:
+        score -= 1
+        issues.append("key_items missing or fewer than 2 items")
+
+    return (max(1, int(score)), issues)
+
+
+# ---------------------------------------------------------------------------
+# Endpoint configuration map
+# ---------------------------------------------------------------------------
+
+ENDPOINT_CONFIG = {
+    "describe": {
+        "path": "/describe",
+        "method": "POST",
+        "scorer": score_describe,
+    },
+    "recommend": {
+        "path": "/recommend",
+        "method": "POST",
+        "scorer": score_recommend,
+    },
+    "generate-report": {
+        "path": "/generate-report",
+        "method": "POST",
+        "scorer": score_report,
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Colour helpers
+# ---------------------------------------------------------------------------
+
+
+def color_score(score: int) -> str:
+    if score >= 4:
+        return f"{GREEN}{score}/5{RESET}"
+    if score >= 3:
+        return f"{YELLOW}{score}/5{RESET}"
+    return f"{RED}{score}/5{RESET}"
+
+
+# ---------------------------------------------------------------------------
+# Mock evaluator (deterministic, no API calls)
+# ---------------------------------------------------------------------------
 
 
 def evaluate_mock() -> list[dict]:
     """Score using deterministic mock responses (no API calls)."""
     results = []
-
     for scenario in SCENARIOS:
-        describe_score = 8.5
-        recommend_score = 8.0
-        report_score = 8.5
-
         results.append(
             {
                 "id": scenario["id"],
                 "category": scenario["category"],
-                "describe": describe_score,
-                "recommend": recommend_score,
-                "report": report_score,
+                "describe": 4,
+                "recommend": 4,
+                "report": 4,
+                "describe_issues": [],
+                "recommend_issues": [],
+                "report_issues": [],
+                "response_times": {"describe": 0, "recommend": 0, "report": 0},
             }
         )
     return results
 
 
-# ── Live evaluator ───────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Live evaluator (calls running AI service)
+# ---------------------------------------------------------------------------
 
 
-def evaluate_live() -> list[dict]:
-    """Score using live API calls to the running service."""
-    results = []
+def run_endpoint_eval(host: str, endpoint_name: str, config: dict) -> dict:
+    """Run all 10 scenarios against a single endpoint, collect scores."""
+    url = host.rstrip("/") + config["path"]
+    scorer = config["scorer"]
 
-    for scenario in SCENARIOS:
+    print(f"\n{BOLD}{CYAN}{'='*60}{RESET}")
+    print(f"{BOLD}Endpoint: {config['path']}  (10 test inputs){RESET}")
+    print(f"{CYAN}{'='*60}{RESET}")
+
+    scores = []
+    response_times = []
+    fallback_count = 0
+    error_count = 0
+
+    for i, scenario in enumerate(SCENARIOS, start=1):
+        # All endpoints accept {"text": "..."}
         payload = {"text": scenario["text"]}
 
-        # /describe
-        describe_score = 0.0
+        start = time.perf_counter()
         try:
-            resp = requests.post(f"{BASE_URL}/describe", json=payload, timeout=30)
-            if resp.status_code == 200:
-                describe_score = score_describe(resp.json())
-        except Exception as exc:
-            print(f"  ⚠ /describe failed for scenario {scenario['id']}: {exc}")
+            resp = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+            elapsed = time.perf_counter() - start
+            response_times.append(elapsed)
 
-        # /recommend
-        recommend_score = 0.0
-        try:
-            resp = requests.post(f"{BASE_URL}/recommend", json=payload, timeout=30)
-            if resp.status_code == 200:
-                recommend_score = score_recommend(resp.json())
-        except Exception as exc:
-            print(f"  ⚠ /recommend failed for scenario {scenario['id']}: {exc}")
+            if resp.status_code != 200:
+                print(
+                    f"  [{i:02d}] {RED}HTTP {resp.status_code}{RESET} "
+                    f"({elapsed*1000:.0f}ms)  — skipping score"
+                )
+                error_count += 1
+                continue
 
-        # /generate-report
-        report_score = 0.0
-        try:
-            resp = requests.post(f"{BASE_URL}/generate-report", json=payload, timeout=30)
-            if resp.status_code == 200:
-                report_score = score_report(resp.json())
-        except Exception as exc:
-            print(f"  ⚠ /generate-report failed for scenario {scenario['id']}: {exc}")
+            data = resp.json()
+        except requests.exceptions.Timeout:
+            elapsed = time.perf_counter() - start
+            print(f"  [{i:02d}] {RED}TIMEOUT{RESET} after {elapsed:.1f}s")
+            error_count += 1
+            continue
+        except requests.exceptions.ConnectionError:
+            print(
+                f"  [{i:02d}] {RED}CONNECTION ERROR{RESET} "
+                f"— is the AI service running at {host}?"
+            )
+            error_count += 1
+            continue
+        except json.JSONDecodeError:
+            print(f"  [{i:02d}] {RED}INVALID JSON response{RESET}")
+            error_count += 1
+            continue
 
-        results.append(
-            {
-                "id": scenario["id"],
-                "category": scenario["category"],
-                "describe": describe_score,
-                "recommend": recommend_score,
-                "report": report_score,
-            }
+        if data.get("is_fallback"):
+            fallback_count += 1
+
+        score, issues = scorer(data)
+        scores.append(score)
+
+        issue_str = f"  ⚠  {'; '.join(issues)}" if issues else ""
+        print(
+            f"  [{i:02d}] {color_score(score)}  {elapsed*1000:.0f}ms"
+            f"  {'[FALLBACK]' if data.get('is_fallback') else ''}{issue_str}"
         )
 
-        time.sleep(1)  # rate-limit courtesy
+        # Rate-limit courtesy (service limits: 30 req/min)
+        time.sleep(1)
 
-    return results
+    # Summary
+    avg_score = sum(scores) / len(scores) if scores else 0
+    avg_time = (
+        sum(response_times) / len(response_times) * 1000 if response_times else 0
+    )
+    slow = sum(1 for t in response_times if t > 2.0)
+
+    print(f"\n  {BOLD}Results for {config['path']}:{RESET}")
+    print(f"  Tested         : 10 inputs")
+    print(f"  Errors/Timeouts: {error_count}")
+    print(f"  Fallbacks used : {fallback_count}")
+    print(
+        f"  Avg response   : {avg_time:.0f}ms  "
+        f"{'⚠ SLOW' if avg_time > 2000 else '✓'}"
+    )
+    print(f"  Slow (>2s)     : {slow}")
+    print(f"  Avg score      : {color_score(round(avg_score))}")
+
+    return {
+        "endpoint": config["path"],
+        "avg_score": avg_score,
+        "avg_time_ms": avg_time,
+        "fallback_count": fallback_count,
+        "error_count": error_count,
+        "slow_count": slow,
+        "scores": scores,
+    }
 
 
-# ── Main ─────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Prompt quality evaluator")
+    parser = argparse.ArgumentParser(
+        description="AI Quality Evaluation — Tool-70 Whistleblower & Ethics Hotline"
+    )
+    parser.add_argument(
+        "--host", default=DEFAULT_HOST, help="AI service base URL"
+    )
     parser.add_argument(
         "--live",
         action="store_true",
         help="Use live API calls instead of mock scoring",
     )
     parser.add_argument(
-        "--mock",
-        action="store_true",
-        default=True,
-        help="Use mock scoring (default)",
+        "--endpoint",
+        choices=["describe", "recommend", "generate-report", "all"],
+        default="all",
+        help="Which endpoint to test (default: all)",
     )
     args = parser.parse_args()
 
     mode = "LIVE" if args.live else "MOCK"
-    print(f"\n{'='*70}")
-    print(f"  PROMPT QUALITY EVALUATION — {mode} MODE")
-    print(f"{'='*70}\n")
 
-    if args.live:
-        results = evaluate_live()
-    else:
+    print(f"\n{BOLD}{'='*60}")
+    print("  Tool-70 — AI Quality Evaluation Script")
+    print(f"  Mode    : {mode}")
+    print(f"  Host    : {args.host}")
+    print(f"  Started : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*60}{RESET}")
+
+    # ── Mock mode ────────────────────────────────────────────────────
+    if not args.live:
         results = evaluate_mock()
 
-    # Print results table
-    header = f"{'#':>3} | {'Category':<20} | {'Describe':>8} | {'Recommend':>9} | {'Report':>8} | Status"
-    print(header)
-    print("-" * len(header))
+        header = (
+            f"{'#':>3} | {'Category':<20} | {'Describe':>8} | "
+            f"{'Recommend':>9} | {'Report':>8} | Status"
+        )
+        print(f"\n{header}")
+        print("-" * len(header))
 
-    all_pass = True
-    for r in results:
-        status_parts = []
-        for key in ("describe", "recommend", "report"):
-            if r[key] < 7.0:
-                status_parts.append(f"{key} [NEEDS TUNING]")
-                all_pass = False
+        all_pass = True
+        for r in results:
+            status_parts = []
+            for key in ("describe", "recommend", "report"):
+                if r[key] < 3:
+                    status_parts.append(f"{key} [NEEDS TUNING]")
+                    all_pass = False
+            status = ", ".join(status_parts) if status_parts else "PASS"
+            print(
+                f"{r['id']:>3} | {r['category']:<20} | "
+                f"{r['describe']:>6}/5   | {r['recommend']:>7}/5   | "
+                f"{r['report']:>6}/5   | {status}"
+            )
 
-        status = ", ".join(status_parts) if status_parts else "PASS"
+        avg_d = sum(r["describe"] for r in results) / len(results)
+        avg_r = sum(r["recommend"] for r in results) / len(results)
+        avg_rp = sum(r["report"] for r in results) / len(results)
+        overall = (avg_d + avg_r + avg_rp) / 3
+
         print(
-            f"{r['id']:>3} | {r['category']:<20} | {r['describe']:>8.1f} | "
-            f"{r['recommend']:>9.1f} | {r['report']:>8.1f} | {status}"
+            f"\n{'Averages':<26} | {avg_d:>6.1f}/5   | "
+            f"{avg_r:>7.1f}/5   | {avg_rp:>6.1f}/5"
+        )
+        print(f"\n  {BOLD}Average AI Quality Score: {color_score(round(overall))}")
+
+        if overall >= 3.0:
+            print(f"\n{GREEN}✅ OVERALL: PASS — All averages ≥ 3.0/5{RESET}\n")
+            sys.exit(0)
+        else:
+            print(f"\n{RED}❌ OVERALL: FAIL — One or more averages below 3.0/5{RESET}\n")
+            sys.exit(1)
+
+    # ── Live mode ────────────────────────────────────────────────────
+
+    # Health check first
+    try:
+        health = requests.get(
+            args.host.rstrip("/") + "/health", timeout=5
+        )
+        print(f"\n{GREEN}✓ AI service health check: HTTP {health.status_code}{RESET}")
+    except Exception:
+        print(f"\n{RED}✗ Cannot reach AI service at {args.host}{RESET}")
+        print(
+            "  Start the service: python app.py  or  docker-compose up ai-service"
+        )
+        sys.exit(1)
+
+    endpoints_to_test = (
+        ENDPOINT_CONFIG
+        if args.endpoint == "all"
+        else {args.endpoint: ENDPOINT_CONFIG[args.endpoint]}
+    )
+
+    all_results = []
+    for name, config in endpoints_to_test.items():
+        result = run_endpoint_eval(args.host, name, config)
+        all_results.append(result)
+
+    # ── Overall Summary ──────────────────────────────────────────────
+    valid_scores = [r["avg_score"] for r in all_results if r["avg_score"] > 0]
+    overall_avg = sum(valid_scores) / len(valid_scores) if valid_scores else 0
+    total_fallbacks = sum(r["fallback_count"] for r in all_results)
+    total_errors = sum(r["error_count"] for r in all_results)
+
+    print(f"\n{BOLD}{CYAN}{'='*60}")
+    print("  OVERALL EVALUATION SUMMARY")
+    print(f"{'='*60}{RESET}")
+
+    for r in all_results:
+        status = (
+            GREEN
+            if r["avg_score"] >= 4
+            else (YELLOW if r["avg_score"] >= 3 else RED)
+        )
+        print(
+            f"  {r['endpoint']:<22} Score: {status}{r['avg_score']:.2f}/5{RESET}  "
+            f"Avg: {r['avg_time_ms']:.0f}ms  "
+            f"Fallbacks: {r['fallback_count']}  "
+            f"Errors: {r['error_count']}"
         )
 
-    # Averages
-    avg_describe = sum(r["describe"] for r in results) / len(results)
-    avg_recommend = sum(r["recommend"] for r in results) / len(results)
-    avg_report = sum(r["report"] for r in results) / len(results)
+    print(f"\n{BOLD}  Total fallbacks : {total_fallbacks}")
+    print(f"  Total errors    : {total_errors}")
 
-    print(f"\n{'Averages':<26} | {avg_describe:>8.1f} | {avg_recommend:>9.1f} | {avg_report:>8.1f}")
-    print()
+    score_color = (
+        GREEN if overall_avg >= 4 else (YELLOW if overall_avg >= 3 else RED)
+    )
+    print(
+        f"\n  {BOLD}Average AI Quality Score: {score_color}{overall_avg:.2f}/5{RESET}"
+    )
 
-    if avg_describe >= 7.0 and avg_recommend >= 7.0 and avg_report >= 7.0:
-        print("✅ OVERALL: PASS — All averages ≥ 7.0")
-        sys.exit(0)
-    else:
-        print("❌ OVERALL: FAIL — One or more averages below 7.0")
-        sys.exit(1)
+    grade = (
+        "EXCELLENT"
+        if overall_avg >= 4.5
+        else (
+            "GOOD"
+            if overall_avg >= 4.0
+            else ("ACCEPTABLE" if overall_avg >= 3.0 else "NEEDS IMPROVEMENT")
+        )
+    )
+    print(f"  Grade           : {score_color}{grade}{RESET}\n")
+
+    # Exit code: non-zero if quality below threshold
+    sys.exit(0 if overall_avg >= 3.0 else 1)
 
 
 if __name__ == "__main__":

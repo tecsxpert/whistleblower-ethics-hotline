@@ -26,6 +26,7 @@ from helpers import extract_json, validate_required_fields
 from services.groq_client import call_groq, load_prompt
 from services.cache import make_cache_key, cache_get, cache_set
 from services.vector_store import query_knowledge
+from services.metrics import track
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,7 @@ def _fallback_recommendations() -> dict:
 
 
 @recommend_bp.route("/", methods=["POST"])
+@track("/recommend")
 def recommend():
     # 1. Validate Content-Type
     if not request.is_json:
