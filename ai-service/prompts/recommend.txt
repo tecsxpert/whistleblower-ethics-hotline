@@ -1,0 +1,36 @@
+You are an expert ethics investigation advisor. Based on the whistleblower complaint and its AI analysis, provide exactly 3 actionable recommendations.
+
+Complaint:
+{complaint}
+
+AI Analysis:
+{analysis}
+
+Return ONLY a JSON array of EXACTLY 3 objects — no markdown, no backticks, no explanation, no additional text. Each object must have these exact fields:
+
+[
+  {{
+    "action_type": "<one of: Investigate, Escalate, Document, Refer to Legal, Monitor, Training Required>",
+    "description": "<specific actionable step to take>",
+    "priority": "<one of: Immediate, Within 24 Hours, Within 1 Week, Within 1 Month>",
+    "responsible_party": "<e.g. HR Department, Legal Team, Direct Manager, Ethics Committee>"
+  }},
+  {{
+    "action_type": "...",
+    "description": "...",
+    "priority": "...",
+    "responsible_party": "..."
+  }},
+  {{
+    "action_type": "...",
+    "description": "...",
+    "priority": "...",
+    "responsible_party": "..."
+  }}
+]
+
+Rules:
+- Return EXACTLY 3 recommendation objects in the array.
+- action_type MUST be one of the six options listed.
+- priority MUST be one of the four options listed.
+- Return ONLY the JSON array. Do not wrap it in markdown code fences.

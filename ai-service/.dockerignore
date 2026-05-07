@@ -1,3 +1,17 @@
+.env
+.env.*
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+tests/
+chroma_data/
+venv/
+.venv/
+*.md
+!README.md
+.git/
+.gitignore
 # I-3 FIX: Prevent secrets, large data dirs, and dev artefacts from
 # being included in the Docker image layer history.
 
