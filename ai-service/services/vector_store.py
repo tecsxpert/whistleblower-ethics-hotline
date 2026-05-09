@@ -1,19 +1,14 @@
 """
-ChromaDB vector store — persistent collection seeded with
-whistleblower-domain knowledge for RAG retrieval.
-"""
-
-import logging
-import threading
-from typing import List
 services/vector_store.py
+=========================
 Manages the ChromaDB vector store and ChromaDB embedding function.
 
 Responsibilities:
   - Create / reuse the 'complaints' ChromaDB collection
   - Use ChromaDB's DefaultEmbeddingFunction for text embedding
   - Seed domain knowledge documents on first run
-  - Expose: add_documents(), similarity_search(), document_count()
+  - Expose: add_documents(), similarity_search(), query_knowledge(),
+            document_count(), is_chromadb_connected()
 
 Thread safety: _get_collection() uses double-checked locking via a threading.RLock
 so the collection is initialised only once in concurrent requests.
@@ -24,70 +19,20 @@ import logging
 import hashlib
 import threading
 from typing import List, Dict, Any
-
+from dotenv import load_dotenv
+load_dotenv()
 import chromadb
 from chromadb.utils import embedding_functions
 
 logger = logging.getLogger(__name__)
 
-# ── Singleton plumbing ───────────────────────────────────────────────
-_lock = threading.Lock()
-_collection = None
-_chroma_client = None
-
-COLLECTION_NAME = "whistleblower_knowledge"
-PERSIST_DIR = "./chroma_data"
-EMBED_MODEL = "all-MiniLM-L6-v2"
-
-# ── Seed documents ───────────────────────────────────────────────────
-_SEED_DOCUMENTS: list[str] = [
-    "Whistleblower protection laws prohibit retaliation against employees who report misconduct in good faith.",
-    "Ethics hotlines must maintain anonymity and confidentiality for all reporters to encourage participation.",
-    "Financial fraud includes falsifying records, embezzlement, and misappropriation of company assets.",
-    "Workplace harassment complaints should be investigated within 30 days by an impartial committee.",
-    "Bribery and corruption reports require immediate escalation to senior management and legal counsel.",
-    "Data privacy violations involving customer PII must be reported under GDPR within 72 hours.",
-    "Conflict of interest must be disclosed when an employee has personal financial ties to a vendor or client.",
-    "Safety violations in the workplace must be documented and corrected before resuming operations.",
-    "Retaliation against a whistleblower is a serious legal offence that can result in criminal prosecution.",
-    "Anonymous reports are treated with equal weight as identified reports during the investigation process.",
-]
-
-
-def _get_collection():
-    """Return the ChromaDB collection (singleton, thread-safe)."""
-    global _collection, _chroma_client
-    if _collection is not None:
-        return _collection
-
-    with _lock:
-        if _collection is not None:
-            return _collection  # double-checked locking
-
-        try:
-            ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name=EMBED_MODEL
-            )
-            _chroma_client = chromadb.PersistentClient(path=PERSIST_DIR)
-            _collection = _chroma_client.get_or_create_collection(
-                name=COLLECTION_NAME,
-                embedding_function=ef,
-            )
-            logger.info(
-                "ChromaDB collection '%s' ready (%d docs).",
-                COLLECTION_NAME,
-                _collection.count(),
-            )
-        except Exception as exc:
-            logger.error("Failed to initialise ChromaDB: %s", exc)
-            _collection = None
 # ── Configuration ─────────────────────────────────────────────────────────────
 COLLECTION_NAME = "complaints"
-TOP_K = 3  # default number of results returned by similarity_search
-MIN_RELEVANCE_SCORE = 0.4  # Fix #14: filter out low-relevance results
+TOP_K = 3          # default number of results returned by similarity_search
+MIN_RELEVANCE_SCORE = 0.4  # filter out low-relevance results
 
-# ME-5 FIX: Export the model name so /health can import it instead of
-# hardcoding a magic string that may drift out of sync.
+# Export the model name so /health can import it instead of hardcoding a magic
+# string that may drift out of sync.
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
 # ── Domain knowledge seed documents ──────────────────────────────────────────
@@ -205,7 +150,6 @@ _SEED_DOCUMENTS: List[Dict[str, str]] = [
 ]
 
 # ── Singleton state ───────────────────────────────────────────────────────────
-# C-1 FIX: Use RLock (reentrant) instead of Lock.
 _init_lock = threading.RLock()
 _client = None
 _collection = None
@@ -226,28 +170,34 @@ def _get_collection() -> chromadb.Collection:
         if _initialised:
             return _collection
 
-        # Read AFTER load_dotenv() has run in app.py
         persist_dir = os.getenv("CHROMA_PERSIST_DIR")
         if persist_dir:
             os.makedirs(persist_dir, exist_ok=True)
             _client = chromadb.PersistentClient(path=persist_dir)
             logger.info("ChromaDB using persistent storage at %s", persist_dir)
         else:
-            _client = chromadb.Client()
+            # FIX: chromadb.Client() is deprecated and removed in modern chromadb.
+            # Use EphemeralClient() for in-memory storage.
+            _client = chromadb.EphemeralClient()
             logger.info("ChromaDB using in-memory storage (no CHROMA_PERSIST_DIR set)")
 
         ef = embedding_functions.DefaultEmbeddingFunction()
+
+        # FIX: Explicitly set hnsw:space to "cosine" so that ChromaDB returns
+        # cosine distances (range 0–2). Without this, ChromaDB defaults to L2
+        # (Euclidean) distances which are unbounded, making the
+        # `1.0 - (distance / 2.0)` similarity formula produce wrong/negative scores.
         _collection = _client.get_or_create_collection(
             name=COLLECTION_NAME,
             embedding_function=ef,
+            metadata={"hnsw:space": "cosine"},
         )
         logger.info(
-            "Collection '%s' ready. Documents stored: %d",
+            "Collection '%s' ready (cosine metric). Documents stored: %d",
             COLLECTION_NAME,
             _collection.count(),
         )
 
-        # Seed if empty — Fix #8: pass collection explicitly, no global dependency.
         if _collection.count() == 0:
             logger.info("Seeding %d domain knowledge documents …", len(_SEED_DOCUMENTS))
             _seed_documents(_collection)
@@ -258,62 +208,8 @@ def _get_collection() -> chromadb.Collection:
     return _collection
 
 
-def init_vector_store() -> None:
-    """
-    Initialise the vector store and seed the knowledge base.
-    This MUST be called explicitly — NOT at module import time —
-    so that tests can import this module without downloading ML models.
-    """
-    seed_knowledge_base()
-
-
-def seed_knowledge_base() -> None:
-    """Seed the collection with domain documents if it is empty."""
-    try:
-        collection = _get_collection()
-        if collection is None:
-            logger.warning("Cannot seed — ChromaDB collection unavailable.")
-            return
-
-        if collection.count() > 0:
-            logger.info("Knowledge base already seeded (%d docs).", collection.count())
-            return
-
-        ids = [f"doc_{i}" for i in range(len(_SEED_DOCUMENTS))]
-        collection.add(documents=_SEED_DOCUMENTS, ids=ids)
-        logger.info("Seeded %d documents into '%s'.", len(_SEED_DOCUMENTS), COLLECTION_NAME)
-    except Exception as exc:
-        logger.error("Error seeding knowledge base: %s", exc)
-
-
-def query_knowledge(text: str, n_results: int = 3) -> List[str]:
-    """Return the top-*n_results* relevant documents for *text*."""
-    try:
-        collection = _get_collection()
-        if collection is None or collection.count() == 0:
-            return []
-        results = collection.query(query_texts=[text], n_results=n_results)
-        documents = results.get("documents", [[]])[0]
-        return documents
-    except Exception as exc:
-        logger.error("query_knowledge failed: %s", exc)
-        return []
-
-
-def is_chromadb_connected() -> bool:
-    """Return ``True`` if the ChromaDB collection is reachable."""
-    try:
-        collection = _get_collection()
-        if collection is None:
-            return False
-        collection.count()
-        return True
-    except Exception:
-        return False
-# Fix #8: Accept collection as a parameter — no implicit global dependency.
 def _seed_documents(coll: chromadb.Collection) -> None:
     """Insert the built-in seed documents into the given collection."""
-
     ids = [doc["id"] for doc in _SEED_DOCUMENTS]
     texts = [doc["text"] for doc in _SEED_DOCUMENTS]
     metadatas = [{"source": doc["source"]} for doc in _SEED_DOCUMENTS]
@@ -366,8 +262,8 @@ def add_documents(documents: List[Dict[str, str]]) -> int:
     if not ids:
         return 0
 
-    # ME-6 FIX: Use upsert() instead of add() so re-adding a document with
-    # the same ID updates it instead of crashing with a duplicate ID error.
+    # Use upsert() so re-adding a document with the same ID updates it instead
+    # of crashing with a duplicate ID error.
     coll.upsert(
         ids=ids,
         documents=texts,
@@ -401,9 +297,9 @@ def similarity_search(query: str, top_k: int = TOP_K) -> List[Dict[str, Any]]:
 
         results = coll.query(
             query_texts=[query],
-            # I-10 FIX: Fetch twice as many candidates before filtering so that
-            # if fewer than top_k pass the relevance threshold we still surface
-            # the best available results rather than returning an empty list.
+            # Fetch twice as many candidates before filtering so that if fewer
+            # than top_k pass the relevance threshold we still surface the best
+            # available results rather than returning an empty list.
             n_results=min(top_k * 2, coll.count()),
             include=["documents", "metadatas", "distances"],
         )
@@ -414,17 +310,17 @@ def similarity_search(query: str, top_k: int = TOP_K) -> List[Dict[str, Any]]:
         distances = results.get("distances", [[]])[0]
 
         for doc_text, meta, distance in zip(docs, metas, distances):
-            # ChromaDB cosine distance: 0 = identical, 2 = opposite.
-            # This formula is correct ONLY for the cosine distance space
-            # (the default for collections created without specifying a metric).
+            # Cosine distance returned by ChromaDB: 0 = identical, 2 = opposite.
+            # The collection is created with hnsw:space=cosine (see _get_collection),
+            # so this formula is always correct.
             similarity = round(1.0 - (distance / 2.0), 4)
-            if similarity >= MIN_RELEVANCE_SCORE:  # Fix #14: threshold filter
+            if similarity >= MIN_RELEVANCE_SCORE:
                 output.append({
                     "text": doc_text,
                     "source": meta.get("source", "unknown"),
                     "score": similarity,
                 })
-                if len(output) == top_k:  # I-10: cap final results at top_k
+                if len(output) == top_k:
                     break
 
         logger.info(
@@ -439,11 +335,41 @@ def similarity_search(query: str, top_k: int = TOP_K) -> List[Dict[str, Any]]:
         return []
 
 
+def query_knowledge(text: str, n_results: int = TOP_K) -> List[str]:
+    """
+    Return the top-n_results relevant document texts for *text*, respecting
+    MIN_RELEVANCE_SCORE so low-quality matches are excluded consistently with
+    similarity_search.
+    """
+    try:
+        coll = _get_collection()
+        if coll.count() == 0:
+            return []
+
+        # FIX: Reuse similarity_search so MIN_RELEVANCE_SCORE filtering is applied
+        # consistently. The previous direct coll.query() call bypassed the threshold,
+        # allowing low-relevance noise to reach callers.
+        results = similarity_search(text, top_k=n_results)
+        return [r["text"] for r in results]
+
+    except Exception as exc:
+        logger.error("query_knowledge failed: %s", exc)
+        return []
+
+
+def is_chromadb_connected() -> bool:
+    """Return ``True`` if the ChromaDB collection is reachable."""
+    try:
+        _get_collection().count()
+        return True
+    except Exception:
+        return False
+
+
 def document_count() -> int:
     """
     Return the total number of documents in the collection.
-
-    ME-6 FIX: Let exceptions propagate so callers (e.g. /health) can
-    distinguish "0 documents" from "ChromaDB is down" and report -1.
+    Lets exceptions propagate so callers (e.g. /health) can distinguish
+    "0 documents" from "ChromaDB is down" and report -1.
     """
     return _get_collection().count()

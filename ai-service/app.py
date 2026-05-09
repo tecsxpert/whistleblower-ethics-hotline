@@ -6,8 +6,11 @@ Flask application factory with production-grade security hardening.
 import os
 import time
 import logging
+from dotenv import load_dotenv
+load_dotenv()
 from datetime import datetime, timezone
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request, g
+
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
@@ -51,11 +54,22 @@ def create_app() -> Flask:
     from routes.recommend import recommend_bp
     from routes.report import report_bp
     from routes.health import health_bp
+    from routes.query import query_bp
 
     app.register_blueprint(describe_bp)
     app.register_blueprint(recommend_bp)
     app.register_blueprint(report_bp)
     app.register_blueprint(health_bp)
+    app.register_blueprint(query_bp)
+
+    # ── Register sanitisation middleware ──────────────────────────────
+    from routes.middleware import sanitise_middleware
+    app.before_request(sanitise_middleware)
+
+    # ── /ping endpoint ───────────────────────────────────────────────
+    @app.route("/ping", methods=["GET"])
+    def ping():
+        return jsonify({"pong": True}), 200
 
     # ── Security headers (every response) ────────────────────────────
     @app.after_request
@@ -65,6 +79,9 @@ def create_app() -> Flask:
 
         # Prevent clickjacking
         response.headers["X-Frame-Options"] = "DENY"
+
+        # XSS protection
+        response.headers["X-XSS-Protection"] = "1; mode=block"
 
         # Strict CSP — this is a pure API, no resources needed
         response.headers["Content-Security-Policy"] = (
@@ -77,7 +94,7 @@ def create_app() -> Flask:
         )
 
         # Prevent caching of sensitive AI responses
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+        response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"
 
         # Disable browser feature access
@@ -87,6 +104,9 @@ def create_app() -> Flask:
 
         # Referrer policy
         response.headers["Referrer-Policy"] = "no-referrer"
+
+        # X-Request-ID: echo back or generate
+        response.headers["X-Request-ID"] = getattr(g, "request_id", "unknown")
 
         # Remove server fingerprinting headers
         response.headers.pop("Server", None)

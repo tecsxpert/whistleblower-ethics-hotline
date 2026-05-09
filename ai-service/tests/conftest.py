@@ -8,66 +8,87 @@ import os
 
 # ── Set env vars BEFORE any app import ────────────────────────────────
 os.environ.setdefault("GROQ_API_KEY", "test_key_for_pytest")
-os.environ.setdefault("REDIS_URL", "redis://localhost:6379")
+os.environ.setdefault("REDIS_URL", "")
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from app import create_app
 
 
-# ── Valid mock responses ─────────────────────────────────────────────
+# ── Valid mock responses (V2 architecture) ────────────────────────────
 MOCK_DESCRIBE_RESPONSE = json.dumps({
     "category": "Financial Fraud",
     "severity": "Critical",
-    "summary": "An employee witnessed fraudulent invoice approvals totalling $50,000 directed to a shell company with familial ties to the approving manager.",
-    "key_facts": [
-        "Manager approved fake invoices",
-        "Invoices worth $50,000",
-        "Shell company owned by manager's brother-in-law"
+    "summary": (
+        "An employee witnessed fraudulent invoice approvals totalling "
+        "$50,000 directed to a shell company with familial ties to the "
+        "approving manager."
+    ),
+    "key_entities": [
+        "Manager",
+        "Shell company",
+        "Brother-in-law",
     ],
-    "recommended_action": "Immediately escalate to the legal department and initiate a forensic audit of all invoices approved by the manager.",
-    "confidence_score": 0.95
+    "recommended_action": (
+        "Immediately escalate to the legal department and initiate a "
+        "forensic audit of all invoices approved by the manager."
+    ),
 })
 
-MOCK_RECOMMEND_RESPONSE = json.dumps([
-    {
-        "action_type": "Investigate",
-        "description": "Conduct a forensic audit of all invoices approved by the implicated manager over the past 12 months.",
-        "priority": "Immediate",
-        "responsible_party": "Legal Team"
-    },
-    {
-        "action_type": "Escalate",
-        "description": "Escalate findings to the Chief Compliance Officer and Board of Directors.",
-        "priority": "Within 24 Hours",
-        "responsible_party": "Ethics Committee"
-    },
-    {
-        "action_type": "Document",
-        "description": "Preserve all financial records, emails, and communications related to the shell company transactions.",
-        "priority": "Immediate",
-        "responsible_party": "HR Department"
-    }
-])
+MOCK_RECOMMEND_RESPONSE = json.dumps({
+    "recommendations": [
+        {
+            "action_type": "Investigation",
+            "description": (
+                "Conduct a forensic audit of all invoices approved by "
+                "the implicated manager over the past 12 months."
+            ),
+            "priority": "High",
+        },
+        {
+            "action_type": "Escalation",
+            "description": (
+                "Escalate findings to the Chief Compliance Officer "
+                "and Board of Directors."
+            ),
+            "priority": "Medium",
+        },
+        {
+            "action_type": "Documentation",
+            "description": (
+                "Preserve all financial records, emails, and "
+                "communications related to the shell company."
+            ),
+            "priority": "Low",
+        },
+    ]
+})
 
 MOCK_REPORT_RESPONSE = json.dumps({
     "title": "Investigation Report: Suspected Fraudulent Invoice Scheme",
-    "summary": "A whistleblower report alleges systematic invoice fraud involving a manager and a related-party shell company. Immediate investigation is recommended.",
-    "overview": "The complaint details a scheme where a manager approved fraudulent invoices totalling $50,000 to a shell company owned by his brother-in-law. This constitutes a potential conflict of interest and financial fraud. The pattern suggests this may not be an isolated incident. A full forensic audit and employee interviews are warranted. Protective measures for the whistleblower should be enacted immediately.",
+    "summary": (
+        "A whistleblower report alleges systematic invoice fraud "
+        "involving a manager and a related-party shell company."
+    ),
+    "overview": (
+        "The complaint details a scheme where a manager approved "
+        "fraudulent invoices totalling $50,000 to a shell company "
+        "owned by his brother-in-law. This constitutes a potential "
+        "conflict of interest and financial fraud. A full forensic "
+        "audit and employee interviews are warranted."
+    ),
     "key_items": [
         "Fraudulent invoices totalling $50,000 identified",
         "Shell company linked to manager's brother-in-law",
         "Potential conflict of interest violation",
-        "Possible ongoing scheme requiring historical review"
+        "Possible ongoing scheme requiring historical review",
     ],
     "recommendations": [
         "Initiate forensic audit of manager's approved transactions",
         "Engage external counsel for independent investigation",
-        "Implement whistleblower protection measures"
+        "Implement whistleblower protection measures",
     ],
-    "risk_level": "Critical",
-    "estimated_resolution_days": 45
 })
 
 
@@ -93,55 +114,12 @@ def mock_cache():
     route module has already bound a local reference via
     'from services.cache import cache_get'.
     """
-    with patch("routes.describe.cache_get", return_value=None) as d_get, \
-         patch("routes.describe.cache_set") as d_set, \
-         patch("routes.recommend.cache_get", return_value=None) as r_get, \
-         patch("routes.recommend.cache_set") as r_set, \
-         patch("routes.report.cache_get", return_value=None) as rp_get, \
-         patch("routes.report.cache_set") as rp_set:
-        yield {
-            "describe_get": d_get, "describe_set": d_set,
-            "recommend_get": r_get, "recommend_set": r_set,
-            "report_get": rp_get, "report_set": rp_set,
-        }
-
-
-@pytest.fixture(autouse=True)
-def mock_vector_store():
-    """Mock ChromaDB queries at the ROUTE level where they are used.
-
-    Each route imports query_knowledge directly, creating a local
-    binding.  We must patch where used, not where defined.
-    """
-    with patch("routes.describe.query_knowledge", return_value=[]), \
-         patch("routes.recommend.query_knowledge", return_value=[]), \
-         patch("routes.report.query_knowledge", return_value=[]):
+    with patch("routes.describe.cache_get", return_value=None), \
+         patch("routes.describe.cache_set"), \
+         patch("routes.recommend.cache_get", return_value=None), \
+         patch("routes.recommend.cache_set"), \
+         patch("routes.report.cache_get", return_value=None), \
+         patch("routes.report.cache_set"), \
+         patch("routes.query.cache_get", return_value=None), \
+         patch("routes.query.cache_set"):
         yield
-tests/conftest.py
-Shared pytest fixtures for the ai-service test suite.
-
-I-12 FIX: Moving the `client` fixture to conftest.py means every test file
-gets it automatically — no copy-paste per file.
-
-HI-12 FIX: Set a dummy GROQ_API_KEY before importing `app` so that
-create_app() doesn't raise RuntimeError in CI environments where .env
-does not exist.
-"""
-
-import os
-import pytest
-
-# HI-12 FIX: Ensure GROQ_API_KEY is set BEFORE app import triggers create_app().
-# In CI/CD pipelines there is no .env file; without this, every test crashes
-# with "GROQ_API_KEY is missing" before any test function runs.
-os.environ.setdefault("GROQ_API_KEY", "test-key-for-ci")
-
-from app import app  # noqa: E402
-
-
-@pytest.fixture
-def client():
-    """Provide a Flask test client with TESTING mode enabled."""
-    app.config["TESTING"] = True
-    with app.test_client() as c:
-        yield c
